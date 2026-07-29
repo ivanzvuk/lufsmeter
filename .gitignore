@@ -1,0 +1,20 @@
+﻿# Build output
+dist/
+build/
+*.spec
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Runtime data
+recordings/
+
+# Redundant archives
+omt_binaries.zip
+
+# Diagnostic
+omt_diag.wav
+
+# Empty / unknown
+25.2

@@ -1,0 +1,18 @@
+build_mac.sh — это bash-скрипт для macOS, его нужно запускать на Mac через bash build_mac.sh, а не через python.
+
+Для сборки macOS-версии вам нужно:
+
+Скопировать папку lufsmeter_srt_v3 на Mac
+
+На Mac выполнить:
+chmod +x build_mac.sh
+./build_mac.sh
+
+
+Либо пошагово на Mac:
+
+brew install portaudio ffmpeg
+pip install -r requirements_mac.txt
+pip install py2app
+python create_icon_mac.py
+python setup.py py2app
