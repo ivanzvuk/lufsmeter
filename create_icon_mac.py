@@ -7,6 +7,7 @@
 Для macOS потребуется дополнительно iconutil (встроен в macOS):
   python create_icon_mac.py
 """
+import sys
 from PIL import Image, ImageDraw
 import subprocess
 import os

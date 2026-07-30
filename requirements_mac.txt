@@ -1,6 +1,5 @@
 numpy>=1.21
 PyQt5>=5.15
-pyaudio>=0.2.11
 scipy>=1.7
-opencv-python>=4.5
-Pillow>=8.0
+sounddevice>=0.4.6
+zeroconf>=0.28

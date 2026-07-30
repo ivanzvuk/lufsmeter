@@ -15,7 +15,7 @@ import sys
 import os
 from setuptools import setup
 
-APP = ['lufsmeter_mac.py']
+APP = ['lufsmeter.py']
 APP_NAME = "LUFS Meter"
 
 OPTIONS = {
@@ -25,6 +25,7 @@ OPTIONS = {
         'scipy',
         'PyQt5',
         'pyaudio',
+        'sounddevice',
     ],
     'includes': [
         'scipy.signal',
@@ -46,7 +47,6 @@ OPTIONS = {
         'tkinter',
         'matplotlib',
         'cv2',
-        'audioop',
     ],
     'plist': {
         'CFBundleName': APP_NAME,

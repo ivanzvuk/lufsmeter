@@ -1,4 +1,5 @@
 import sys
+import platform
 import numpy as np
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QGroupBox, QCheckBox, QComboBox, QDoubleSpinBox, QLabel, QPushButton,
@@ -8,9 +9,6 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                               QListWidget, QListWidgetItem)
 from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal, QPointF, QRectF, QObject
 from PyQt5.QtGui import QPainter, QColor, QPen, QFont, QFontMetrics, QPolygonF
-import pyaudio
-import sounddevice as sd
-import audioop
 from scipy import signal
 from collections import deque
 import time
@@ -21,8 +19,6 @@ import os
 import json
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime
-import ctypes
-from ctypes import c_int, byref, windll
 import math
 import urllib.request
 import zipfile
@@ -31,26 +27,49 @@ import importlib.util
 import socket
 import struct
 
-# ASIO support via NAudio (pythonnet)
-import sys as _sys
-if getattr(_sys, 'frozen', False):
-    _app_dir = _sys._MEIPASS
+# ─── Platform detection ─────────────────────────────────────────────
+IS_WINDOWS = sys.platform == 'win32'
+IS_MACOS = sys.platform == 'darwin'
+
+# ─── Audio backend selection ───────────────────────────────────────
+# sounddevice is used on both platforms (SoloPlayer, macOS capture)
+import sounddevice as sd
+
+if IS_WINDOWS:
+    import pyaudio
+    import audioop
+else:
+    # On macOS, capture is done via sounddevice; pyaudio not required
+    audioop = None  # not used on macOS path
+
+# ─── Application directory (for bundled apps) ──────────────────────
+if getattr(sys, 'frozen', False):
+    _app_dir = sys._MEIPASS
 else:
     _app_dir = os.path.dirname(os.path.abspath(__file__))
-_sys.path.insert(0, _app_dir)
+sys.path.insert(0, _app_dir)
+
+# ─── Windows-only: ASIO support via NAudio (pythonnet) ────────────
+if IS_WINDOWS:
+    import ctypes
+    from ctypes import c_int, byref, windll
+    import sys as _sys
 
 HAS_ASIO = False
-try:
-    import clr
-    _naudio_path = os.path.join(_app_dir, 'NAudio.dll')
-    clr.AddReference(_naudio_path)
-    import NAudio
-    from NAudio.Wave import AsioOut
-    from System.Threading import Thread, ApartmentState, ThreadStart
-    HAS_ASIO = True
-    print(f"[OK] ASIO support (NAudio) loaded from {_naudio_path}")
-except Exception as _asio_err:
-    print(f"[FAIL] ASIO support unavailable: {_asio_err}")
+if IS_WINDOWS:
+    try:
+        import clr
+        _naudio_path = os.path.join(_app_dir, 'NAudio.dll')
+        clr.AddReference(_naudio_path)
+        import NAudio
+        from NAudio.Wave import AsioOut
+        from System.Threading import Thread, ApartmentState, ThreadStart
+        HAS_ASIO = True
+        print(f"[OK] ASIO support (NAudio) loaded from {_naudio_path}")
+    except Exception as _asio_err:
+        print(f"[FAIL] ASIO support unavailable: {_asio_err}")
+else:
+    print("[INFO] ASIO not available on this platform")
 
 # Константы для аудио
 FORMAT = pyaudio.paInt16
@@ -69,12 +88,10 @@ TOOLS_DIR = os.path.join(os.path.dirname(sys.executable) if getattr(sys, 'frozen
 
 def find_ffmpeg():
     """Ищет ffmpeg в PATH и в tools/"""
-    exe = 'ffmpeg.exe' if os.name == 'nt' else 'ffmpeg'
-    # Проверяем PATH
+    exe = 'ffmpeg.exe' if IS_WINDOWS else 'ffmpeg'
     which = shutil.which(exe)
     if which:
         return which
-    # Проверяем tools/
     local = os.path.join(TOOLS_DIR, exe)
     if os.path.isfile(local):
         return local
@@ -86,8 +103,14 @@ def ensure_ffmpeg(parent_widget=None):
         return True
     os.makedirs(TOOLS_DIR, exist_ok=True)
     print("[SETUP] ffmpeg не найден, загружаю...")
-    url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-    zip_path = os.path.join(TOOLS_DIR, 'ffmpeg.zip')
+    if IS_WINDOWS:
+        url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+        zip_path = os.path.join(TOOLS_DIR, 'ffmpeg.zip')
+        exe_name = 'ffmpeg.exe'
+    else:
+        url = "https://evermeet.cx/ffmpeg/ffmpeg.zip"
+        zip_path = os.path.join(TOOLS_DIR, 'ffmpeg.zip')
+        exe_name = 'ffmpeg'
     progress = None
     if parent_widget:
         progress = QProgressDialog("Загрузка ffmpeg...", None, 0, 0, parent_widget)
@@ -98,13 +121,14 @@ def ensure_ffmpeg(parent_widget=None):
         urllib.request.urlretrieve(url, zip_path)
         with zipfile.ZipFile(zip_path, 'r') as zf:
             for name in zf.namelist():
-                if name.endswith('/ffmpeg.exe') or name.endswith('/ffmpeg'):
+                if name.endswith('/' + exe_name) or name.endswith(exe_name):
                     parts = name.split('/')
                     zf.extract(name, TOOLS_DIR)
                     os.rename(os.path.join(TOOLS_DIR, name),
-                              os.path.join(TOOLS_DIR, 'ffmpeg.exe'))
+                              os.path.join(TOOLS_DIR, exe_name))
                     break
         os.remove(zip_path)
+        os.chmod(os.path.join(TOOLS_DIR, exe_name), 0o755)
         print(f"[SETUP] ffmpeg загружен в {TOOLS_DIR}")
         return True
     except Exception as e:
@@ -121,10 +145,13 @@ def ensure_packages():
     required = {
         'numpy': 'numpy',
         'PyQt5': 'PyQt5',
-        'pyaudio': 'pyaudio',
         'scipy': 'scipy',
         'zeroconf': 'zeroconf',
     }
+    if IS_WINDOWS:
+        required['pyaudio'] = 'pyaudio'
+    else:
+        required['sounddevice'] = 'sounddevice'
     missing = []
     for name, pip_name in required.items():
         if importlib.util.find_spec(name) is None:
@@ -439,12 +466,11 @@ class SRTStreamProcessor(QThread):
             
             print(f"Запускаем ffmpeg: {' '.join(command)}")
             
-            # Запускаем ffmpeg процесс без окна консоли
             startupinfo = None
-            if os.name == 'nt':  # Windows
+            if IS_WINDOWS:
                 startupinfo = subprocess.STARTUPINFO()
                 startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                startupinfo.wShowWindow = 0  # SW_HIDE
+                startupinfo.wShowWindow = 0
             
             self.ffmpeg_process = subprocess.Popen(
                 command, 
@@ -555,126 +581,133 @@ class SRTStreamProcessor(QThread):
         self.wait()
 
 class AudioStreamThread(QThread):
-    """Поток для захвата аудио с устройства"""
-    data_ready = pyqtSignal(int, float, float, float)  # channel_idx, momentary, short_term, integrated
-    rms_ready = pyqtSignal(int, float, float)  # channel_idx, peak_db_l, peak_db_r
-    
+    """Поток для захвата аудио с устройства (pyaudio на Windows, sounddevice на macOS)"""
+    data_ready = pyqtSignal(int, float, float, float)
+    rms_ready = pyqtSignal(int, float, float)
+
     def __init__(self, device_index, channel_idx, channel_mode, device_type, calibration_offset=0.0, parent=None):
         super().__init__(parent)
         self.device_index = device_index
         self.channel_idx = channel_idx
-        self.channel_mode = channel_mode  # '1+2', '1+1', '2+2'
-        self.device_type = device_type  # 'WDM Input', 'WDM Output'
+        self.channel_mode = channel_mode
+        self.device_type = device_type
         self.calibration_offset = calibration_offset
         self.running = False
-        self.audio = pyaudio.PyAudio()
         self.processor = R128EBUProcessor(calibration_offset=calibration_offset)
         self.recorder = None
         self.solo_queue = None
-        
+        if IS_WINDOWS:
+            self.audio = pyaudio.PyAudio()
+
     def run(self):
         self.running = True
         stream = None
-        
+        channels = 2
+
         try:
-            # Всегда используем стерео для захвата (для WDM устройств)
-            channels = 2
-            
-            # Для выходных устройств используем специальный подход
-            if self.device_type == 'WDM Output':
-                try:
-                    stream = self.audio.open(
-                        format=FORMAT,
-                        channels=channels,
-                        rate=RATE,
-                        input=True,
-                        input_device_index=self.device_index,
-                        frames_per_buffer=CHUNK,
-                        as_loopback=True
-                    )
-                except:
-                    stream = self.audio.open(
-                        format=FORMAT,
-                        channels=channels,
-                        rate=RATE,
-                        input=True,
-                        input_device_index=self.device_index,
-                        frames_per_buffer=CHUNK
-                    )
+            if IS_WINDOWS:
+                self._run_windows(stream, channels)
             else:
-                # Для входных устройств стандартный подход
-                stream = self.audio.open(
-                    format=FORMAT,
-                    channels=channels,
-                    rate=RATE,
-                    input=True,
-                    input_device_index=self.device_index,
-                    frames_per_buffer=CHUNK
-                )
-            
-            while self.running:
-                try:
-                    data = stream.read(CHUNK, exception_on_overflow=False)
-                    audio_data = np.frombuffer(data, dtype=np.int16)
-                    raw_float = audio_data.astype(np.float32)
-                    
-                    is_wdm_stereo = self.channel_mode == '1+2'
-                    if is_wdm_stereo:
-                        processed_data = self._process_stereo(audio_data)
-                    elif self.channel_mode in ['1+1', '2+2']:
-                        channel_num = int(self.channel_mode.split('+')[0]) - 1
-                        processed_data = self._process_mono(audio_data, min(channel_num, 1))
-                    else:
-                        processed_data = self._process_mono(audio_data, 0)
-                    
-                    momentary, short_term, integrated = self.processor.process_audio(processed_data)
-                    
-                    peak_db_l = 20.0 * math.log10(max(float(np.max(np.abs(processed_data))), 1e-10))
-                    self.rms_ready.emit(self.channel_idx, peak_db_l, peak_db_l)
-                    
-                    self.data_ready.emit(self.channel_idx, momentary, short_term, integrated)
-                    if self.recorder:
-                        if is_wdm_stereo:
-                            self.recorder.feed_audio(self.channel_idx, raw_float, self.processor.sample_rate)
-                        else:
-                            self.recorder.feed_audio(self.channel_idx, processed_data, self.processor.sample_rate)
-                    if self.solo_queue is not None:
-                        try:
-                            if is_wdm_stereo:
-                                self.solo_queue.put_nowait((raw_float / 32768.0).astype(np.float32))
-                            else:
-                                self.solo_queue.put_nowait((processed_data / 32768.0).astype(np.float32))
-                        except queue.Full:
-                            pass
-                    
-                except Exception as e:
-                    print(f"Ошибка чтения аудио: {e}")
-                    break
-                    
+                self._run_macos(channels)
         except Exception as e:
             print(f"Ошибка открытия аудиоустройства {self.device_type}: {e}")
         finally:
-            if stream:
-                stream.stop_stream()
-                stream.close()
-    
-    def _process_stereo(self, audio_data):
-        """Обработка стерео сигнала (объединение каналов)"""
-        if len(audio_data) >= 2:
-            left_channel = audio_data[::2]
-            right_channel = audio_data[1::2]
-            return (left_channel.astype(np.float32) + right_channel.astype(np.float32)) / 2
-        return audio_data.astype(np.float32)
-    
-    def _process_mono(self, audio_data, channel=0):
-        """Обработка моно сигнала (выбор конкретного канала)"""
-        if len(audio_data) >= 2:
-            if channel == 0:
-                return audio_data[::2].astype(np.float32)
+            if stream is not None:
+                try:
+                    stream.stop_stream()
+                    stream.close()
+                except:
+                    pass
+
+    def _run_windows(self, stream, channels):
+        if self.device_type in ('WDM Output', 'Output'):
+            try:
+                stream = self.audio.open(
+                    format=pyaudio.paInt16, channels=channels, rate=RATE,
+                    input=True, input_device_index=self.device_index,
+                    frames_per_buffer=CHUNK, as_loopback=True)
+            except:
+                stream = self.audio.open(
+                    format=pyaudio.paInt16, channels=channels, rate=RATE,
+                    input=True, input_device_index=self.device_index,
+                    frames_per_buffer=CHUNK)
+        else:
+            stream = self.audio.open(
+                format=pyaudio.paInt16, channels=channels, rate=RATE,
+                input=True, input_device_index=self.device_index,
+                frames_per_buffer=CHUNK)
+
+        while self.running:
+            try:
+                data = stream.read(CHUNK, exception_on_overflow=False)
+                audio_data = np.frombuffer(data, dtype=np.int16)
+                self._process_chunk(audio_data, audio_data.astype(np.float32))
+            except Exception as e:
+                print(f"Ошибка чтения аудио: {e}")
+                break
+
+    def _run_macos(self, channels):
+        # macOS: use sounddevice InputStream (non-callback blocking reads)
+        stream = sd.InputStream(
+            device=self.device_index if self.device_index >= 0 else None,
+            channels=channels, samplerate=RATE, blocksize=CHUNK, dtype='float32')
+        stream.start()
+
+        while self.running:
+            try:
+                chunk, _ = stream.read(CHUNK)
+                if chunk.shape[0] == 0:
+                    time.sleep(0.001)
+                    continue
+                # Convert float32 [-1..1] to int16 to match Windows code path
+                audio_int16 = np.clip(chunk * 32767, -32768, 32767).astype(np.int16).flatten()
+                raw_float = audio_int16.astype(np.float32)
+                self._process_chunk(audio_int16, raw_float)
+            except Exception as e:
+                print(f"Ошибка чтения аудио: {e}")
+                break
+
+    def _process_chunk(self, audio_data, raw_float):
+        is_stereo = self.channel_mode == '1+2'
+        if is_stereo:
+            processed_data = self._process_stereo(audio_data)
+        elif self.channel_mode in ['1+1', '2+2']:
+            ch = int(self.channel_mode.split('+')[0]) - 1
+            processed_data = self._process_mono(audio_data, min(ch, 1))
+        else:
+            processed_data = self._process_mono(audio_data, 0)
+
+        momentary, short_term, integrated = self.processor.process_audio(processed_data)
+        peak_db = 20.0 * math.log10(max(float(np.max(np.abs(processed_data))), 1e-10))
+        self.rms_ready.emit(self.channel_idx, peak_db, peak_db)
+        self.data_ready.emit(self.channel_idx, momentary, short_term, integrated)
+
+        if self.recorder:
+            if is_stereo:
+                self.recorder.feed_audio(self.channel_idx, raw_float, self.processor.sample_rate)
             else:
-                return audio_data[1::2].astype(np.float32)
+                self.recorder.feed_audio(self.channel_idx, processed_data, self.processor.sample_rate)
+        if self.solo_queue is not None:
+            try:
+                if is_stereo:
+                    self.solo_queue.put_nowait((raw_float / 32768.0).astype(np.float32))
+                else:
+                    self.solo_queue.put_nowait((processed_data / 32768.0).astype(np.float32))
+            except queue.Full:
+                pass
+
+    def _process_stereo(self, audio_data):
+        if len(audio_data) >= 2:
+            l = audio_data[::2]
+            r = audio_data[1::2]
+            return (l.astype(np.float32) + r.astype(np.float32)) / 2
         return audio_data.astype(np.float32)
-    
+
+    def _process_mono(self, audio_data, channel=0):
+        if len(audio_data) >= 2:
+            return audio_data[::2].astype(np.float32) if channel == 0 else audio_data[1::2].astype(np.float32)
+        return audio_data.astype(np.float32)
+
     def stop(self):
         self.running = False
         self.wait()
@@ -2218,79 +2251,71 @@ class VolumeMeterWidget(QWidget):
             painter.drawText(10, 15, f"M:{self.current_momentary:.1f} T:{self.target_lufs:.1f}")
 
 class AudioDeviceManager:
-    """Менеджер аудиоустройств и SRT потоков"""
+    """Менеджер аудиоустройств и SRT/OMT потоков (Windows pyaudio, macOS sounddevice)"""
     def __init__(self):
-        self.audio = pyaudio.PyAudio()
-        self.asio_drivers = self._enumerate_asio_drivers()  # [(driver_name, display_name)]
+        self.asio_drivers = []
+        if IS_WINDOWS:
+            self.audio = pyaudio.PyAudio()
+            self.asio_drivers = self._enumerate_asio_drivers()
+        else:
+            self.audio = None
         self.devices = self.get_all_audio_devices()
-        self.srt_streams = []  # Список добавленных SRT потоков
-        self.omt_streams = []  # Список добавленных OMT потоков
-        
+        self.srt_streams = []
+        self.omt_streams = []
+
     def _enumerate_asio_drivers(self):
-        """Получить список ASIO драйверов через NAudio"""
-        if not HAS_ASIO:
+        if not HAS_ASIO or not IS_WINDOWS:
             return []
         try:
             from System.Threading import Thread, ApartmentState, ThreadStart
             result = []
-            
             def enum_asio():
                 try:
-                    driver_names = list(AsioOut.GetDriverNames())
-                    for name in driver_names:
+                    for name in list(AsioOut.GetDriverNames()):
                         result.append((name, f"[ASIO] {name}"))
                 except Exception as e:
                     print(f"ASIO enum error: {e}")
-            
             t = Thread(ThreadStart(enum_asio))
             t.SetApartmentState(ApartmentState.STA)
             t.Start()
             t.Join()
-            
             return result
         except Exception as e:
             print(f"ASIO enumeration failed: {e}")
             return []
-        
+
     def get_all_audio_devices(self):
-        """Получить список всех аудиоустройств"""
         devices = []
-        
-        # WDM устройства ввода
-        for i in range(self.audio.get_device_count()):
-            device_info = self.audio.get_device_info_by_index(i)
-            if device_info['maxInputChannels'] > 0:
-                devices.append((
-                    i, 
-                    f"[Input] {device_info['name']}", 
-                    device_info['maxInputChannels'],
-                    'WDM Input'
-                ))
-        
-        # WDM устройства вывода (только те, что могут работать как входные)
-        for i in range(self.audio.get_device_count()):
-            device_info = self.audio.get_device_info_by_index(i)
-            if (device_info['maxOutputChannels'] > 0 and 
-                device_info['maxInputChannels'] > 0 and
-                'output' in device_info['name'].lower()):
-                devices.append((
-                    i, 
-                    f"[Output] {device_info['name']}", 
-                    device_info['maxOutputChannels'],
-                    'WDM Output'
-                ))
-        
-        # Добавляем ASIO устройства
-        for driver_name, display_name in self.asio_drivers:
-            devices.append((-3, display_name, 16, 'ASIO'))
-        
-        # Добавляем виртуальное выходное устройство для тестирования
-        devices.append((-1, "[Virtual] System Output", 2, 'WDM Output'))
-        
+
+        if IS_WINDOWS:
+            for i in range(self.audio.get_device_count()):
+                info = self.audio.get_device_info_by_index(i)
+                if info['maxInputChannels'] > 0:
+                    devices.append((i, f"[Input] {info['name']}", info['maxInputChannels'], 'WDM Input'))
+            for i in range(self.audio.get_device_count()):
+                info = self.audio.get_device_info_by_index(i)
+                if info['maxOutputChannels'] > 0 and info['maxInputChannels'] > 0 and 'output' in info['name'].lower():
+                    devices.append((i, f"[Output] {info['name']}", info['maxOutputChannels'], 'WDM Output'))
+            for driver_name, display_name in self.asio_drivers:
+                devices.append((-3, display_name, 16, 'ASIO'))
+            devices.append((-1, "[Virtual] System Output", 2, 'WDM Output'))
+        else:
+            # macOS: enumerate via sounddevice
+            try:
+                dev_list = sd.query_devices()
+                for i, dev in enumerate(dev_list):
+                    if dev['max_input_channels'] > 0:
+                        devices.append((i, f"[Input] {dev['name']}", dev['max_input_channels'], 'Input'))
+                for i, dev in enumerate(dev_list):
+                    if dev['max_output_channels'] > 0 and dev['max_input_channels'] > 0:
+                        devices.append((i, f"[Output] {dev['name']}", dev['max_output_channels'], 'Output'))
+                devices.append((-1, "[Virtual] System Output", 2, 'Output'))
+            except Exception as e:
+                print(f"[ERR] Sounddevice device enumeration failed: {e}")
+
         return devices
-    
+
     def build_srt_url(self, host, port, stream_id, passphrase, mode):
-        """Построить SRT URL из параметров"""
         url = f"srt://{host}:{port}?mode={mode}"
         if stream_id:
             url += f"&streamid={stream_id}"
@@ -2299,56 +2324,44 @@ class AudioDeviceManager:
         return url
 
     def add_srt_stream(self, host, port, stream_id, passphrase, mode, name):
-        """Добавить SRT поток"""
         self.srt_streams.append((host, port, stream_id, passphrase, mode, name))
-        url = self.build_srt_url(host, port, stream_id, passphrase, mode)
-        print(f"Добавлен SRT поток: {name} -> {url}")
+        print(f"Добавлен SRT поток: {name} -> {self.build_srt_url(host, port, stream_id, passphrase, mode)}")
 
     def add_omt_stream(self, host, port, name):
-        """Добавить OMT поток"""
         self.omt_streams.append((host, port, name))
         print(f"Добавлен OMT поток: {name} -> {host}:{port}")
 
     def get_all_devices(self):
-        """Получить все устройства включая SRT и OMT потоки"""
         all_devices = self.devices.copy()
-        
-        # Добавляем SRT потоки
         for host, port, stream_id, passphrase, mode, name in self.srt_streams:
             all_devices.append((-2, f"[SRT] {name}", 2, 'SRT Stream'))
-        
-        # Добавляем OMT потоки
         for host, port, name in self.omt_streams:
             all_devices.append((-4, f"[OMT] {name}", 32, 'OMT Stream'))
-            
         return all_devices
-    
+
     def get_device_index_by_name(self, name):
-        """Получить индекс устройства по имени"""
-        for idx, device_name, _, device_type in self.get_all_devices():
+        for idx, device_name, _, _ in self.get_all_devices():
             if device_name == name:
                 return idx
         return None
-    
+
     def get_device_type(self, name):
-        """Получить тип устройства по имени"""
         for idx, device_name, _, device_type in self.get_all_devices():
             if device_name == name:
                 return device_type
-        return 'WDM Input'
-    
+        return 'WDM Input' if IS_WINDOWS else 'Input'
+
+    # ─── Windows-only: ASIO helpers ────────────────────────────────
     def get_asio_driver_name(self, display_name):
-        """Получить внутреннее имя ASIO драйвера по отображаемому имени"""
+        if not IS_WINDOWS:
+            return display_name
         for driver_name, disp in self.asio_drivers:
             if disp == display_name:
                 return driver_name
-        if display_name.startswith("[ASIO] "):
-            return display_name[7:]
-        return display_name
+        return display_name[7:] if display_name.startswith("[ASIO] ") else display_name
 
     def get_asio_sample_rate(self, driver_name):
-        """Получить текущую частоту дискретизации ASIO драйвера"""
-        if not HAS_ASIO:
+        if not HAS_ASIO or not IS_WINDOWS:
             return RATE
         try:
             result = [RATE]
@@ -2358,12 +2371,11 @@ class AudioDeviceManager:
                     from NAudio.Wave.Asio import AsioDriver
                     driver = AsioDriver.GetAsioDriverByName(driver_name)
                     driver.Init(System.IntPtr.Zero)
-                    rate = driver.GetSampleRate()
-                    result[0] = int(rate)
+                    result[0] = int(driver.GetSampleRate())
                     driver.ReleaseComAsioDriver()
-                    print(f"[ASIO] {driver_name} sample rate: {rate} Hz")
+                    print(f"[ASIO] {driver_name} sample rate: {result[0]} Hz")
                 except Exception as e:
-                    print(f"[ASIO] Sample rate query error for {driver_name}: {e}")
+                    print(f"[ASIO] Sample rate query error: {e}")
             from System.Threading import Thread, ApartmentState, ThreadStart
             t = Thread(ThreadStart(query))
             t.SetApartmentState(ApartmentState.STA)
@@ -2375,8 +2387,7 @@ class AudioDeviceManager:
             return RATE
 
     def get_asio_channel_count(self, driver_name):
-        """Получить количество входных каналов ASIO драйвера"""
-        if not HAS_ASIO:
+        if not HAS_ASIO or not IS_WINDOWS:
             return 256
         try:
             result = [0]
@@ -2389,9 +2400,8 @@ class AudioDeviceManager:
                     in_ch, out_ch = driver.GetChannels()
                     result[0] = int(in_ch)
                     driver.ReleaseComAsioDriver()
-                    print(f"[ASIO] {driver_name}: {in_ch} in, {out_ch} out channels")
                 except Exception as e:
-                    print(f"[ASIO] Channel count query error for {driver_name}: {e}")
+                    print(f"[ASIO] Channel count query error: {e}")
             from System.Threading import Thread, ApartmentState, ThreadStart
             t = Thread(ThreadStart(query))
             t.SetApartmentState(ApartmentState.STA)
@@ -2426,7 +2436,7 @@ class ChannelConfigWidget(QWidget):
         self.channel_mode_combo = QComboBox()
         self._populate_default_modes()
         
-        self._current_device_type = 'WDM Input'
+        self._current_device_type = 'WDM Input' if IS_WINDOWS else 'Input'
         
         # При смене устройства обновляем список режимов (для ASIO)
         self.device_combo.currentIndexChanged.connect(self._on_device_changed)
@@ -2502,21 +2512,17 @@ class ChannelConfigWidget(QWidget):
         return self.audio_manager.get_device_type(name)
     
     def _on_device_changed(self):
-        """Обработчик смены устройства - обновляет список режимов каналов"""
         device_type = self._get_selected_device_type()
         self._current_device_type = device_type
-        
-        if device_type == 'ASIO':
-            # Для ASIO показываем все доступные каналы
+
+        if IS_WINDOWS and device_type == 'ASIO':
             device_name = self.device_combo.currentText()
             driver_name = self.audio_manager.get_asio_driver_name(device_name)
-            channel_count = self.audio_manager.get_asio_channel_count(driver_name)
-            self._populate_asio_modes(channel_count)
+            ch_count = self.audio_manager.get_asio_channel_count(driver_name)
+            self._populate_asio_modes(ch_count)
         elif device_type == 'OMT Stream':
-            # Для OMT показываем все возможные каналы (до 32)
             self._populate_asio_modes(32)
         else:
-            # Для WDM/SRT/Virtual - стандартные режимы
             self._populate_default_modes()
     
     def _populate_default_modes(self):
@@ -2582,8 +2588,8 @@ class ChannelConfigWidget(QWidget):
         return self.device_combo.currentText()
     
     def get_channel_mode(self):
-        if self._current_device_type in ('ASIO', 'OMT Stream'):
-            # Для ASIO/OMT возвращаем текст напрямую: "1+2", "3+4", "5", "7" и т.д.
+        asio_like = IS_WINDOWS and self._current_device_type in ('ASIO', 'OMT Stream')
+        if asio_like or self._current_device_type == 'OMT Stream':
             return self.channel_mode_combo.currentText()
         else:
             mode_text = self.channel_mode_combo.currentText()
@@ -3303,9 +3309,9 @@ class MainWindow(QMainWindow):
         self.rec_folder_label.setStyleSheet("color: #888; font-size: 10px;")
         control_layout.addWidget(self.rec_folder_label, 5, 3)
         
-        # Информация о доступных устройствах
-        asio_count = len(self.audio_manager.asio_drivers)
-        info_text = f"Доступно устройств: {len(self.audio_manager.get_all_devices())} (Input/Output/SRT/Virtual/ASIO:{asio_count})"
+        asio_count = len(self.audio_manager.asio_drivers) if IS_WINDOWS else 0
+        extra = f"ASIO:{asio_count}" if IS_WINDOWS else "SoundDevice"
+        info_text = f"Доступно устройств: {len(self.audio_manager.get_all_devices())} (Input/Output/SRT/Virtual/{extra})"
         info_label = QLabel(info_text)
         info_label.setStyleSheet("color: #888; font-size: 10px;")
         control_layout.addWidget(info_label, 6, 0, 1, 4)
@@ -3400,7 +3406,7 @@ class MainWindow(QMainWindow):
             self.start_all_measurements()
         
     def _apply_dark_titlebar(self, dark):
-        if os.name != 'nt':
+        if not IS_WINDOWS:
             return
         try:
             hwnd = int(self.winId())
@@ -3667,27 +3673,24 @@ class MainWindow(QMainWindow):
     def start_all_measurements(self):
         if self.measuring:
             return
-        # Создаём общий ASIO контроллер для всех окон
-        controller = SharedASIOController(self)
-        self._asio_controller = controller
-        # Передаём ссылку каждому окну
-        for window in self.meter_windows:
-            window._asio_controller = controller
-            window.stop_measurement()
-        # Запускаем все окна (каждое регистрирует свои ASIO слоты)
+        if IS_WINDOWS and self.audio_manager.asio_drivers:
+            controller = SharedASIOController(self)
+            self._asio_controller = controller
+            for window in self.meter_windows:
+                window._asio_controller = controller
+                window.stop_measurement()
         for window in self.meter_windows:
             window.start_measurement()
-        # Стартуем общий ASIO стрим
-        controller.start(self.audio_manager)
-        # Заполняем _asio_ch_rates в каждом окне
-        ch_rates = controller.get_ch_rates()
-        for window in self.meter_windows:
-            window._asio_ch_rates.update(ch_rates)
+        if IS_WINDOWS and self.audio_manager.asio_drivers:
+            self._asio_controller.start(self.audio_manager)
+            ch_rates = self._asio_controller.get_ch_rates()
+            for window in self.meter_windows:
+                window._asio_ch_rates.update(ch_rates)
             
     def stop_all_measurements(self):
         for window in self.meter_windows:
             window.stop_measurement()
-        if hasattr(self, '_asio_controller') and self._asio_controller is not None:
+        if IS_WINDOWS and hasattr(self, '_asio_controller') and self._asio_controller is not None:
             self._asio_controller.stop()
             self._asio_controller = None
     
@@ -3940,6 +3943,8 @@ class MainWindow(QMainWindow):
         event.accept()
 
 def _set_high_priority():
+    if not IS_WINDOWS:
+        return
     try:
         kernel32 = ctypes.windll.kernel32
         GetCurrentProcess = kernel32.GetCurrentProcess
@@ -3956,10 +3961,15 @@ def _set_high_priority():
 if __name__ == "__main__":
     _set_high_priority()
     app = QApplication(sys.argv)
-    
+
+    if IS_MACOS:
+        print("Запуск на macOS. Для захвата системного аудио установите BlackHole:")
+        print("  brew install blackhole-2ch")
+        print("  Затем выберите BlackHole как устройство ввода в Audio MIDI Setup")
+
     first_run_setup()
-    
+
     window = MainWindow()
     window.show()
-    
+
     sys.exit(app.exec_())

@@ -40,7 +40,7 @@ source venv/bin/activate
 # 4. Установка Python зависимостей
 echo "[3/5] Установка Python зависимостей..."
 pip install --upgrade pip
-pip install numpy PyQt5 pyaudio scipy py2app
+pip install numpy PyQt5 scipy sounddevice py2app
 
 # 5. Создание иконки
 echo "[4/5] Создание иконки..."
