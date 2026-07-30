@@ -26,15 +26,19 @@ jobs:
           pip install pyinstaller numpy scipy PyQt5 pyaudio pythonnet sounddevice zeroconf
 
       - name: Build with PyInstaller
+        shell: cmd
         run: |
-          pyinstaller --name=LUFSMeter --windowed --onefile --icon=icon.ico --clean `
-            --add-binary="NAudio.dll;." `
-            --hidden-import=scipy.signal --hidden-import=scipy.special --hidden-import=scipy.sparse `
-            --hidden-import=pyaudio --hidden-import=PyQt5 --hidden-import=clr --collect-all=clr `
-            --exclude-module=torch --exclude-module=transformers --exclude-module=tensorboard `
-            --exclude-module=pandas --exclude-module=matplotlib --exclude-module=PIL `
-            --exclude-module=torchvision --exclude-module=onnxruntime --exclude-modure=sklearn `
-            --exclude-module=joblib --exclude-module=numba --exclude-module=rich `
+          pyinstaller --name=LUFSMeter --windowed --onefile --icon=icon.ico --clean ^
+            --add-binary="NAudio.dll;." ^
+            --collect-all PyQt5 ^
+            --collect-all scipy ^
+            --collect-all sounddevice ^
+            --hidden-import=scipy.signal --hidden-import=scipy.special --hidden-import=scipy.sparse ^
+            --hidden-import=pyaudio --hidden-import=PyQt5 --hidden-import=clr --collect-all=clr ^
+            --exclude-module=torch --exclude-module=transformers --exclude-module=tensorboard ^
+            --exclude-module=pandas --exclude-module=matplotlib --exclude-module=PIL ^
+            --exclude-module=torchvision --exclude-module=onnxruntime --exclude-module=sklearn ^
+            --exclude-module=joblib --exclude-module=numba --exclude-module=rich ^
             lufsmeter.py
 
       - name: Upload artifact
@@ -44,7 +48,7 @@ jobs:
           path: dist/LUFSMeter.exe
 
   build-macos:
-    runs-on: macos-latest
+    runs-on: macos-latest  # GitHub теперь использует ARM (M1) runners
     steps:
       - uses: actions/checkout@v4
 
@@ -60,17 +64,46 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install numpy scipy PyQt5 sounddevice py2app zeroconf
+          pip install pyinstaller numpy scipy PyQt5 sounddevice zeroconf Pillow
 
-      - name: Create icon
+      - name: Create icon (.icns)
         run: python create_icon_mac.py
 
-      - name: Build .app bundle
-        run: python setup.py py2app
+      - name: Build .app bundle with PyInstaller
+        run: |
+          rm -rf build dist __pycache__ *.spec
+          ARCH=$(uname -m)
+          pyinstaller --windowed --onedir --clean \
+            --name "LUFS Meter" \
+            --icon icon.icns \
+            --osx-bundle-identifier com.lufsmeter.app \
+            --target-arch "$ARCH" \
+            --collect-all PyQt5 \
+            --collect-all scipy \
+            --collect-all numpy \
+            --collect-all sounddevice \
+            --hidden-import scipy.signal \
+            --hidden-import scipy.special \
+            --hidden-import scipy.sparse \
+            --hidden-import scipy.fft \
+            --hidden-import scipy.linalg \
+            --hidden-import scipy.optimize \
+            --hidden-import scipy._lib \
+            --hidden-import sounddevice \
+            --hidden-import zeroconf \
+            --exclude-module tkinter \
+            --exclude-module matplotlib \
+            --exclude-module PIL \
+            --exclude-module pandas \
+            --exclude-module cv2 \
+            lufsmeter.py
 
       - name: Create DMG
         run: |
-          hdiutil create -volname "LUFS Meter" -srcfolder dist/LUFS\ Meter.app -ov -format UDZO dist/LUFSMeter.dmg
+          hdiutil create -volname "LUFS Meter" \
+            -srcfolder "dist/LUFS Meter.app" \
+            -ov -format UDZO \
+            "dist/LUFSMeter.dmg"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

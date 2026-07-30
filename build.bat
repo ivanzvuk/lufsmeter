@@ -1,9 +1,8 @@
 @echo off
 chcp 65001 > nul
-title Build lufsmeter_v11
+title Build LUFS Meter
 echo.
-echo ===== Building Анализатор громкости R128 EBU v11 =====
-echo.
+echo ===== Building LUFS Meter (Windows) =====
 echo.
 
 REM Check Python
@@ -26,7 +25,7 @@ if errorlevel 1 (
 REM Install deps
 echo.
 echo [1/3] Installing dependencies...
-pip install --upgrade pyinstaller numpy scipy PyQt5 pyaudio pythonnet
+pip install --upgrade pyinstaller numpy scipy PyQt5 pyaudio pythonnet sounddevice zeroconf
 if errorlevel 1 (
     echo [ERROR] Failed to install dependencies
     pause
@@ -35,15 +34,24 @@ if errorlevel 1 (
 echo [OK] Dependencies installed
 
 REM Clean old builds
-if exist "lufsmeter_v11.spec" del "lufsmeter_v11.spec"
-if exist "dist\lufsmeter_v11.exe" del "dist\lufsmeter_v11.exe"
+if exist "build" rmdir /S /Q "build"
+if exist "dist" rmdir /S /Q "dist"
 
 REM Build
 echo.
 echo [2/3] Building executable...
-echo.
-
-pyinstaller --name=lufsmeter_v11 --windowed --onefile --icon=icon.ico --clean --add-binary="NAudio.dll;." --hidden-import=scipy.signal --hidden-import=scipy.special --hidden-import=scipy.sparse --hidden-import=pyaudio --hidden-import=PyQt5 --hidden-import=clr --collect-all=clr --exclude-module=torch --exclude-module=transformers --exclude-module=tensorboard --exclude-module=pandas --exclude-module=matplotlib --exclude-module=PIL --exclude-module=torchvision --exclude-module=torchaudio --exclude-module=onnxruntime --exclude-module=sklearn --exclude-module=joblib --exclude-module=openpyxl --exclude-module=pygame --exclude-module=numba --exclude-module=llvmlite --exclude-module=rich --exclude-module=tokenizers --exclude-module=anyio --exclude-module=pydantic --exclude-module=regex --exclude-module=safetensors --exclude-module=fsspec --exclude-module=urllib3 --exclude-module=charset_normalizer --exclude-module=certifi lufsmeter.py
+pyinstaller --name=LUFSMeter --windowed --onefile --icon=icon.ico --clean ^
+    --add-binary="NAudio.dll;." ^
+    --collect-all PyQt5 ^
+    --collect-all scipy ^
+    --collect-all sounddevice ^
+    --hidden-import=scipy.signal --hidden-import=scipy.special --hidden-import=scipy.sparse ^
+    --hidden-import=pyaudio --hidden-import=PyQt5 --hidden-import=clr --collect-all=clr ^
+    --exclude-module=torch --exclude-module=transformers --exclude-module=tensorboard ^
+    --exclude-module=pandas --exclude-module=matplotlib --exclude-module=PIL ^
+    --exclude-module=torchvision --exclude-module=onnxruntime --exclude-module=sklearn ^
+    --exclude-module=joblib --exclude-module=numba --exclude-module=rich ^
+    lufsmeter.py
 
 if errorlevel 1 (
     echo [ERROR] Build failed!
@@ -52,16 +60,9 @@ if errorlevel 1 (
 )
 
 echo.
-echo [3/3] Copying NAudio.dll to dist...
-if exist "dist\lufsmeter_v11.exe" (
-    copy /Y "NAudio.dll" "dist\NAudio.dll" > nul
-    echo [OK] NAudio.dll copied to dist\
-)
-
-echo.
 echo ==========================================
-echo   DONE! File: dist\lufsmeter_v11.exe
-echo   Copy dist folder to any Windows PC
+echo   DONE! File: dist\LUFSMeter.exe
+echo   Copy to any Windows PC to run
 echo   Requires .NET Framework (included in Windows)
 echo ==========================================
 echo.

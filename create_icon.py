@@ -1,3 +1,7 @@
+"""
+Создание icon.ico для Windows.
+Используется только на Windows; на macOS используйте create_icon_mac.py.
+"""
 from PIL import Image, ImageDraw
 import sys
 

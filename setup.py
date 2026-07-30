@@ -1,63 +1,52 @@
 """
-Setup script для создания macOS .app бандла через py2app.
+Сборка macOS .app бандла.
 
-Использование:
-  python setup.py py2app
+ВАЖНО: Рекомендуется использовать PyInstaller вместо py2app.
+Выполните build_mac.sh или напрямую:
 
-Требования:
+  pip install pyinstaller numpy scipy PyQt5 sounddevice zeroconf
+  python create_icon_mac.py
+  pyinstaller --windowed --onedir --name "LUFS Meter" --icon icon.icns \
+    --osx-bundle-identifier com.lufsmeter.app \
+    --collect-all PyQt5 --collect-all scipy --collect-all numpy \
+    --hidden-import scipy.signal --hidden-import scipy.special \
+    --hidden-import scipy.sparse --hidden-import scipy.fft \
+    --hidden-import scipy.linalg --hidden-import scipy.optimize \
+    --hidden-import scipy._lib --hidden-import sounddevice \
+    --hidden-import zeroconf \
+    --exclude-module tkinter --exclude-module matplotlib \
+    lufsmeter.py
+
+py2app (legacy, не рекомендуется для Apple Silicon):
   pip install py2app
-
-Перед сборкой установите зависимости:
-  pip install numpy PyQt5 pyaudio scipy opencv-python
-  brew install portaudio ffmpeg
+  python setup.py py2app
 """
-import sys
-import os
 from setuptools import setup
 
 APP = ['lufsmeter.py']
 APP_NAME = "LUFS Meter"
 
 OPTIONS = {
-    'argv_emulation': True,
+    'argv_emulation': False,
     'packages': [
-        'numpy',
-        'scipy',
-        'PyQt5',
-        'pyaudio',
-        'sounddevice',
+        'numpy', 'scipy', 'PyQt5', 'sounddevice', 'zeroconf',
     ],
     'includes': [
-        'scipy.signal',
-        'scipy.signal.signaltools',
-        'scipy.signal.windows',
-        'scipy.signal._spectral',
-        'scipy._lib',
-        'scipy._lib._ccallback_c',
-        'scipy.sparse.linalg.isolve.iterative',
-        'scipy.linalg',
-        'scipy.linalg.cython_blas',
-        'scipy.linalg.cython_lapack',
-        'scipy.sparse',
-        'scipy.special',
-        'scipy.optimize',
-        'scipy.fft',
+        'scipy.signal', 'scipy.special', 'scipy.sparse',
+        'scipy.fft', 'scipy.linalg', 'scipy.optimize',
+        'scipy._lib', 'scipy._lib._ccallback_c',
+        'sounddevice', 'zeroconf',
     ],
-    'excludes': [
-        'tkinter',
-        'matplotlib',
-        'cv2',
-    ],
+    'excludes': ['tkinter', 'matplotlib', 'PIL', 'cv2'],
     'plist': {
         'CFBundleName': APP_NAME,
         'CFBundleDisplayName': APP_NAME,
         'CFBundleIdentifier': 'com.lufsmeter.app',
-        'CFBundleVersion': '1.0.0',
-        'CFBundleShortVersionString': '1.0.0',
+        'CFBundleVersion': '11.0.0',
+        'CFBundleShortVersionString': '11.0.0',
         'NSHighResolutionCapable': True,
-        'NSMicrophoneUsageDescription': 'Приложению нужен доступ к микрофону для измерения уровня громкости.',
+        'NSMicrophoneUsageDescription': 'Доступ к микрофону для измерения громкости.',
     },
-    'iconfile': 'icon.icns' if os.path.exists('icon.icns') else None,
 }
 
 setup(
